@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   extract,
+  extractListResponseId,
   extractQuotedMessageText,
   getQuotedContextInfo,
 } from '../src/messages/parsing.js';
@@ -18,6 +19,19 @@ test('extract preserves existing empty-string fallback behavior', () => {
   assert.equal(extract(undefined), '');
   assert.equal(extract({ conversation: '', extendedTextMessage: { text: 'fallback' } }), 'fallback');
   assert.equal(extract({ documentMessage: { caption: 'document caption' } }), '');
+});
+
+test('extractListResponseId returns the selected row ID', () => {
+  assert.equal(
+    extractListResponseId({
+      listResponseMessage: {
+        singleSelectReply: { selectedRowId: 'wabotdl:test:720' },
+      },
+    }),
+    'wabotdl:test:720',
+  );
+  assert.equal(extractListResponseId({ conversation: 'hello' }), '');
+  assert.equal(extractListResponseId(null), '');
 });
 
 test('getQuotedContextInfo recognizes supported context-bearing message types', () => {

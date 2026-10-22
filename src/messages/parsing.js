@@ -30,3 +30,8 @@ export function extract(content) {
     ''
   );
 }
+
+
+export function extractListResponseId(content) {
+  return content?.listResponseMessage?.singleSelectReply?.selectedRowId || '';
+}

@@ -13,6 +13,7 @@ async function loadHandler(
   const state = {
     dispatched: [],
     aiCalls: [],
+    selectionCalls: [],
     db: {
       data: {
         banned: [],
@@ -49,13 +50,19 @@ async function loadHandler(
   mock.module('../src/messages/parsing.js', {
     namedExports: {
       extract: (content) => content?.conversation ?? content?.extendedTextMessage?.text ?? '',
+      extractListResponseId: (content) => content?.listResponseMessage?.singleSelectReply?.selectedRowId ?? '',
       extractQuotedMessageText: (message) => message?.conversation ?? message?.extendedTextMessage?.text ?? '',
       getQuotedContextInfo: (content) => content?.extendedTextMessage?.contextInfo ?? null,
     },
   });
 
   mock.module('../src/commands/download.js', {
-    namedExports: { handle: async () => {} },
+    namedExports: {
+      handle: async () => {},
+      handleSelection: async (ctx, rowId) => {
+        state.selectionCalls.push({ ctx, rowId });
+      },
+    },
   });
 
   mock.module('../src/commands/ai.js', {
@@ -269,4 +276,33 @@ test('a marked quote without a verified participant must not trigger group AI', 
   );
 
   assert.equal(state.aiCalls.length, 0, 'a missing participant must not prove bot identity');
+});
+
+
+test('a WhatsApp list selection is routed to the downloader, not AI or commands', async (t) => {
+  const { handleMessage, state } = await loadHandler(t);
+
+  const rowId = 'wabotdl:00000000-0000-4000-8000-000000000000:720';
+
+  await handleMessage(
+    { user: { id: botJid }, sendMessage: async () => ({ key: {} }) },
+    {
+      key: {
+        remoteJid: groupJid,
+        fromMe: false,
+        participant: `${configuredOwner}@s.whatsapp.net`,
+      },
+      messageTimestamp: Math.floor(Date.now() / 1000),
+      message: {
+        listResponseMessage: {
+          singleSelectReply: { selectedRowId: rowId },
+        },
+      },
+    },
+  );
+
+  assert.equal(state.selectionCalls.length, 1);
+  assert.equal(state.selectionCalls[0].rowId, rowId);
+  assert.equal(state.aiCalls.length, 0);
+  assert.equal(state.dispatched.length, 0);
 });

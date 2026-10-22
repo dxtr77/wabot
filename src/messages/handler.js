@@ -1,5 +1,10 @@
 import { jidNormalizedUser, normalizeMessageContent } from '@whiskeysockets/baileys';
-import { extract, extractQuotedMessageText, getQuotedContextInfo } from './parsing.js';
+import {
+  extract,
+  extractListResponseId,
+  extractQuotedMessageText,
+  getQuotedContextInfo,
+} from './parsing.js';
 import { cfg } from '../config.js';
 import { db } from '../store.js';
 import * as dl from '../commands/download.js';
@@ -51,11 +56,12 @@ export async function handleMessage(sock, msg) {
 
   const content = normalizeMessageContent(msg.message);
   const text = extract(content).trim();
+  const listResponseId = extractListResponseId(content);
   const currentMediaType = content?.imageMessage ? 'image'
     : content?.audioMessage ? 'audio' : '';
   const currentMediaMessage = currentMediaType
     ? content[`${currentMediaType}Message`] : null;
-  if ((!text && !currentMediaType) || text.startsWith(MARK)) return;
+  if ((!text && !currentMediaType && !listResponseId) || text.startsWith(MARK)) return;
 
   const meJids = [sock.user?.id, sock.user?.lid].filter(Boolean).map(jidNormalizedUser);
   const isMe = (j) => !!j && meJids.includes(jidNormalizedUser(j));
@@ -129,6 +135,10 @@ export async function handleMessage(sock, msg) {
   };
 
   try {
+    if (listResponseId) {
+      return dl.handleSelection(ctx, listResponseId);
+    }
+
     // ---- Automatic AI triggers ----
     if (!isPrefixed) {
       if (isGroup) {

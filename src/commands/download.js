@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,6 +13,8 @@ const IMG = new Set(['.jpg', '.jpeg', '.png', '.webp']);
 
 let running = 0;
 const queue = [];
+const pendingSelections = new Map();
+const SELECTION_TTL_MS = 5 * 60 * 1000;
 
 const acquire = () =>
   new Promise((res) => {
@@ -92,6 +95,182 @@ function runYtDlp(args) {
   );
 }
 
+
+function inspectWithYtDlp(url) {
+  return new Promise((resolve, reject) => {
+    const args = [
+      '--no-playlist', '--no-warnings', '--socket-timeout', '20',
+      '--dump-single-json', '--skip-download',
+    ];
+    if (cfg.dl.cookies) args.push('--cookies', cfg.dl.cookies);
+    args.push('--', url);
+
+    const p = spawn('yt-dlp', args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      error ? reject(error) : resolve(result);
+    };
+
+    const timer = setTimeout(() => {
+      p.kill('SIGKILL');
+      finish(new Error('Video information lookup timed out'));
+    }, 90_000);
+
+    p.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+      if (stdout.length > 12 * 1024 * 1024) {
+        p.kill('SIGKILL');
+        finish(new Error('Video information response was too large'));
+      }
+    });
+    p.stderr.on('data', (chunk) => {
+      stderr = (stderr + chunk.toString()).slice(-3000);
+    });
+    p.on('error', (error) => {
+      finish(new Error(
+        error.code === 'ENOENT' ? 'yt-dlp was not found' : error.message
+      ));
+    });
+    p.on('close', (code) => {
+      if (settled) return;
+      if (code !== 0) {
+        return finish(new Error(
+          `Could not inspect video: ${stderr.trim().slice(-900) || `exit code ${code}`}`
+        ));
+      }
+      try {
+        finish(null, JSON.parse(stdout));
+      } catch {
+        finish(new Error('yt-dlp returned invalid video information'));
+      }
+    });
+  });
+}
+
+function formatSize(format) {
+  const size = Number(format?.filesize ?? format?.filesize_approx);
+  return Number.isFinite(size) && size > 0 ? size : null;
+}
+
+function availableQualities(info) {
+  const formats = Array.isArray(info?.formats) ? info.formats : [];
+  const heights = [...new Set(
+    formats
+      .filter((f) => f.vcodec && f.vcodec !== 'none' && Number(f.height) > 0)
+      .map((f) => Number(f.height))
+      .filter((h) => Number.isInteger(h) && h >= 144 && h <= 4320)
+  )].sort((a, b) => b - a);
+
+  return heights.slice(0, 10).map((height) => {
+    const atHeight = formats.filter(
+      (f) => Number(f.height) === height &&
+        f.vcodec && f.vcodec !== 'none'
+    );
+    const combined = atHeight
+      .filter((f) => f.acodec && f.acodec !== 'none')
+      .sort((a, b) => (formatSize(b) || 0) - (formatSize(a) || 0));
+
+    let bytes = formatSize(combined[0]);
+    if (!bytes) {
+      const videoOnly = atHeight
+        .filter((f) => !f.acodec || f.acodec === 'none')
+        .map(formatSize)
+        .filter(Boolean)
+        .sort((a, b) => b - a)[0];
+      const audioOnly = formats
+        .filter((f) => f.acodec && f.acodec !== 'none' &&
+          (!f.vcodec || f.vcodec === 'none'))
+        .map(formatSize)
+        .filter(Boolean)
+        .sort((a, b) => b - a)[0];
+      if (videoOnly && audioOnly) bytes = videoOnly + audioOnly;
+    }
+
+    return { height, bytes };
+  });
+}
+
+async function showQualityMenu(ctx, url) {
+  let token;
+  try {
+    await ctx.reply('🔎 Checking available video qualities and file sizes…');
+    const info = await inspectWithYtDlp(url);
+    const qualities = availableQualities(info);
+
+    if (!qualities.length) {
+      return ctx.reply('❌ No downloadable video resolutions were found.');
+    }
+
+    for (const [token, pending] of pendingSelections) {
+      if (pending.expiresAt <= Date.now()) pendingSelections.delete(token);
+    }
+
+    token = randomUUID();
+    pendingSelections.set(token, {
+      url,
+      jid: ctx.jid,
+      senderNum: ctx.senderNum,
+      expiresAt: Date.now() + SELECTION_TTL_MS,
+      qualities: new Set(qualities.map((item) => item.height)),
+    });
+
+    const rows = qualities.map(({ height, bytes }) => ({
+      rowId: `wabotdl:${token}:${height}`,
+      title: `${height}p`,
+      description: bytes
+        ? `Estimated size: ${(bytes / 1024 / 1024).toFixed(1)} MB`
+        : 'File size unavailable',
+    }));
+
+    await ctx.send({
+      text: `Video: ${String(info.title || 'Selected video').slice(0, 180)}\nChoose a resolution to download. Sizes are estimates and may differ from the final file.`,
+      title: 'Choose video quality',
+      footer: 'Selection expires in 5 minutes',
+      buttonText: 'View qualities',
+      sections: [{ title: 'Available resolutions', rows }],
+    });
+  } catch (error) {
+    if (token) pendingSelections.delete(token);
+    await ctx.reply(`❌ ${error.message || 'Could not inspect this video.'}`);
+  }
+}
+
+export async function handleSelection(ctx, rowId) {
+  const match = /^wabotdl:([0-9a-f-]{36}):(\d{3,4})$/i.exec(
+    String(rowId || '')
+  );
+  if (!match) return;
+
+  const [, token, heightText] = match;
+  const pending = pendingSelections.get(token);
+  if (!pending) {
+    return ctx.reply('⌛ This quality menu has expired. Send the video URL again.');
+  }
+  if (pending.expiresAt <= Date.now()) {
+    pendingSelections.delete(token);
+    return ctx.reply('⌛ This quality menu has expired. Send the video URL again.');
+  }
+  if (pending.jid !== ctx.jid || pending.senderNum !== ctx.senderNum) {
+    return ctx.reply('❌ This quality selection belongs to another user or chat.');
+  }
+
+  const height = Number(heightText);
+  if (!pending.qualities.has(height)) {
+    return ctx.reply('❌ That quality was not offered in this menu.');
+  }
+
+  pendingSelections.delete(token);
+  return handle(ctx, `${height} ${pending.url}`, 'video');
+}
+
 function findFile(dir, wanted) {
   for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, item.name);
@@ -164,6 +343,7 @@ async function vocalsOnly(videoPath, dir) {
 export async function handle(ctx, args, mode) {
   const parts = args.trim().split(/\s+/).filter(Boolean);
   let height = 720;
+  let explicitHeight = false;
 
   if (parts[0] === 'audio') {
     mode = 'audio';
@@ -172,6 +352,7 @@ export async function handle(ctx, args, mode) {
 
   if (/^\d{3,4}p?$/.test(parts[0] || '')) {
     height = parseInt(parts.shift(), 10);
+    explicitHeight = true;
   }
 
   const url = safeUrl(parts[0] || '');
@@ -181,6 +362,10 @@ export async function handle(ctx, args, mode) {
       `${cfg.prefix}audio <url>  · ` +
       `${cfg.prefix}dl 480 <url>`
     );
+  }
+
+  if (mode !== 'audio' && !explicitHeight) {
+    return showQualityMenu(ctx, url);
   }
 
   const progress = await ctx.createProgress(
