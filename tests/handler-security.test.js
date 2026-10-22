@@ -62,6 +62,7 @@ async function loadHandler(
       handleSelection: async (ctx, rowId) => {
         state.selectionCalls.push({ ctx, rowId });
       },
+      handleTextSelection: async () => false,
     },
   });
 

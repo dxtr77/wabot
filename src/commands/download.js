@@ -222,21 +222,25 @@ async function showQualityMenu(ctx, url) {
       qualities: new Set(qualities.map((item) => item.height)),
     });
 
-    const rows = qualities.map(({ height, bytes }) => ({
-      rowId: `wabotdl:${token}:${height}`,
-      title: `${height}p`,
-      description: bytes
-        ? `Estimated size: ${(bytes / 1024 / 1024).toFixed(1)} MB`
-        : 'File size unavailable',
-    }));
-
-    await ctx.send({
-      text: `Video: ${String(info.title || 'Selected video').slice(0, 180)}\nChoose a resolution to download. Sizes are estimates and may differ from the final file.`,
-      title: 'Choose video quality',
-      footer: 'Selection expires in 5 minutes',
-      buttonText: 'View qualities',
-      sections: [{ title: 'Available resolutions', rows }],
+    const rows = qualities.map(({ height, bytes }, index) => {
+      const size = bytes
+        ? `~${(bytes / 1024 / 1024).toFixed(1)} MB`
+        : 'size unavailable';
+      return `${index + 1}. ${height}p — ${size}`;
     });
+
+    pendingSelections.get(token).choiceHeights =
+      qualities.map((item) => item.height);
+
+    await ctx.reply([
+      '🎬 Choose video quality',
+      `Video: ${String(info.title || 'Selected video').slice(0, 180)}`,
+      '',
+      ...rows,
+      '',
+      'Reply with the number of your chosen quality.',
+      'This menu expires in 5 minutes. Sizes are estimates.',
+    ].join('\n'));
   } catch (error) {
     if (token) pendingSelections.delete(token);
     await ctx.reply(`❌ ${error.message || 'Could not inspect this video.'}`);
@@ -269,6 +273,40 @@ export async function handleSelection(ctx, rowId) {
 
   pendingSelections.delete(token);
   return handle(ctx, `${height} ${pending.url}`, 'video');
+}
+
+export async function handleTextSelection(ctx, text) {
+  if (!/^\s*\d{1,2}\s*$/.test(String(text || ''))) return false;
+
+  const now = Date.now();
+  let selectedMenu = null;
+
+  for (const [token, pending] of pendingSelections) {
+    if (pending.expiresAt <= now) {
+      pendingSelections.delete(token);
+      continue;
+    }
+    if (pending.jid !== ctx.jid || pending.senderNum !== ctx.senderNum) {
+      continue;
+    }
+    if (!selectedMenu || pending.expiresAt > selectedMenu.pending.expiresAt) {
+      selectedMenu = { token, pending };
+    }
+  }
+
+  if (!selectedMenu) return false;
+
+  const choice = Number(String(text).trim());
+  const heights = selectedMenu.pending.choiceHeights || [];
+  if (choice < 1 || choice > heights.length) {
+    await ctx.reply(`Please choose a number from 1 to ${heights.length}.`);
+    return true;
+  }
+
+  const { token, pending } = selectedMenu;
+  pendingSelections.delete(token);
+  await handle(ctx, `${heights[choice - 1]} ${pending.url}`, 'video');
+  return true;
 }
 
 function findFile(dir, wanted) {

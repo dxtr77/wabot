@@ -139,6 +139,8 @@ export async function handleMessage(sock, msg) {
       return dl.handleSelection(ctx, listResponseId);
     }
 
+    if (await dl.handleTextSelection(ctx, text)) return;
+
     // ---- Automatic AI triggers ----
     if (!isPrefixed) {
       if (isGroup) {
