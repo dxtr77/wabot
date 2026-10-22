@@ -276,7 +276,12 @@ export async function handleSelection(ctx, rowId) {
 }
 
 export async function handleTextSelection(ctx, text) {
-  if (!/^\s*\d{1,2}\s*$/.test(String(text || ''))) return false;
+  const normalizedText = String(text || '').replace(/[٠-٩۰-۹]/g, (digit) => {
+    const code = digit.charCodeAt(0);
+    return String(code >= 0x06F0 ? code - 0x06F0 : code - 0x0660);
+  });
+
+  if (!/^\s*\d{1,2}\s*$/.test(normalizedText)) return false;
 
   const now = Date.now();
   let selectedMenu = null;
@@ -296,7 +301,7 @@ export async function handleTextSelection(ctx, text) {
 
   if (!selectedMenu) return false;
 
-  const choice = Number(String(text).trim());
+  const choice = Number(normalizedText.trim());
   const heights = selectedMenu.pending.choiceHeights || [];
   if (choice < 1 || choice > heights.length) {
     await ctx.reply(`Please choose a number from 1 to ${heights.length}.`);
