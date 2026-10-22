@@ -15,6 +15,10 @@ let running = 0;
 const queue = [];
 const pendingSelections = new Map();
 const SELECTION_TTL_MS = 5 * 60 * 1000;
+const activeDownloads = new Set();
+const recentDownloads = new Map();
+const activeQualityMenus = new Set();
+const RECENT_DOWNLOAD_TTL_MS = 30 * 1000;
 
 const acquire = () =>
   new Promise((res) => {
@@ -411,18 +415,64 @@ export async function handle(ctx, args, mode) {
   }
 
   if (mode !== 'audio' && !explicitHeight) {
-    return showQualityMenu(ctx, url);
+    const menuKey = JSON.stringify([ctx.jid || '', ctx.senderNum || '', url]);
+    const hasPendingMenu = [...pendingSelections.values()].some(
+      (pending) =>
+        pending.jid === ctx.jid &&
+        pending.senderNum === ctx.senderNum &&
+        pending.url === url &&
+        pending.expiresAt > Date.now()
+    );
+
+    if (hasPendingMenu) {
+      return ctx.reply('ℹ️ You already have a quality menu for this video. Choose a resolution from that menu.');
+    }
+    if (activeQualityMenus.has(menuKey)) {
+      return ctx.reply('⏳ The quality menu for this video is already being prepared.');
+    }
+
+    activeQualityMenus.add(menuKey);
+    try {
+      return await showQualityMenu(ctx, url);
+    } finally {
+      activeQualityMenus.delete(menuKey);
+    }
   }
 
-  await ctx.react(
-    running >= cfg.dl.concurrency ? '⏳' : '⬇️'
-  );
+  const downloadKey = JSON.stringify([
+    ctx.jid || '',
+    url,
+    mode === 'audio' ? 'audio' : 'video',
+    mode === 'audio' ? 'audio' : height,
+  ]);
+  const now = Date.now();
+  for (const [key, expiresAt] of recentDownloads) {
+    if (expiresAt <= now) recentDownloads.delete(key);
+  }
 
-  await acquire();
-  await ctx.react('⬇️');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wabot-'));
+  if (activeDownloads.has(downloadKey)) {
+    return ctx.reply('⏳ This download is already running in this chat. Ignoring the duplicate request.');
+  }
+  if (recentDownloads.has(downloadKey)) {
+    return ctx.reply('ℹ️ This media was just downloaded in this chat. Ignoring the duplicate request.');
+  }
+
+  // Lock before queueing so duplicate requests cannot occupy queue slots.
+  activeDownloads.add(downloadKey);
+  let acquired = false;
+  let dir;
+  let succeeded = false;
 
   try {
+    await ctx.react(
+      running >= cfg.dl.concurrency ? '⏳' : '⬇️'
+    );
+
+    await acquire();
+    acquired = true;
+    await ctx.react('⬇️');
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wabot-'));
+
     const common = [
       '--no-playlist', '--no-warnings', '--restrict-filenames',
       '--socket-timeout', '20',
@@ -519,12 +569,23 @@ export async function handle(ctx, args, mode) {
         caption: `\u200B${title} (${mb.toFixed(0)} MB, sent as file)`
       });
     }
+    succeeded = true;
     await ctx.react('✅');
   } catch (e) {
     await ctx.react('❌');
     await ctx.reply(`❌ ${e.message || 'Download failed.'}`);
   } finally {
-    release();
-    fs.rm(dir, { recursive: true, force: true }, () => {});
+    if (acquired) release();
+    if (dir) fs.rm(dir, { recursive: true, force: true }, () => {});
+    activeDownloads.delete(downloadKey);
+
+    // Only successful sends get a short duplicate-suppression window.
+    // Failed downloads can be retried immediately.
+    if (succeeded) {
+      recentDownloads.set(downloadKey, Date.now() + RECENT_DOWNLOAD_TTL_MS);
+      while (recentDownloads.size > 1000) {
+        recentDownloads.delete(recentDownloads.keys().next().value);
+      }
+    }
   }
 }

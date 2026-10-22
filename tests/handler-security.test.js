@@ -141,6 +141,25 @@ function makeGroupMessage({ fromMe, text = '!status', quotedParticipant, quotedT
   };
 }
 
+test('the same WhatsApp message ID is handled only once', async (t) => {
+  const { handleMessage, state } = await loadHandler(t);
+  const sock = {
+    user: { id: botJid },
+    sendMessage: async () => ({ key: {} }),
+  };
+  const msg = makeGroupMessage({ fromMe: false, text: '!status' });
+  msg.key.id = 'duplicate-message-test-id';
+
+  await handleMessage(sock, msg);
+  await handleMessage(sock, msg);
+
+  assert.equal(
+    state.dispatched.length,
+    1,
+    're-delivery of the same message ID must not dispatch the command twice',
+  );
+});
+
 test('fromMe alone must not grant owner privileges in a group', async (t) => {
   const { handleMessage, state } = await loadHandler(t);
 

@@ -24,6 +24,33 @@ const num = (jid = '') => jid.split('@')[0].split(':')[0];
 const toSec = (t) => (!t ? 0 : typeof t === 'number' ? t : t.toNumber ? t.toNumber() : Number(t));
 const URL_ONLY = /^https?:\/\/\S+$/i;
 const cooldown = new Map();
+const processedMessages = new Map();
+const MESSAGE_DEDUPE_TTL_MS = 2 * 60 * 1000;
+const MESSAGE_DEDUPE_MAX = 5000;
+
+function isDuplicateMessage(msg, jid) {
+  const id = msg.key?.id;
+  if (!id) return false;
+
+  const participant = msg.key?.participant || msg.participant || '';
+  const key = `${jid}:${participant}:${msg.key?.fromMe ? '1' : '0'}:${id}`;
+  const now = Date.now();
+
+  // Entries are inserted in expiry order; remove expired entries first.
+  while (processedMessages.size) {
+    const first = processedMessages.entries().next().value;
+    if (!first || first[1] > now) break;
+    processedMessages.delete(first[0]);
+  }
+
+  if (processedMessages.has(key)) return true;
+
+  processedMessages.set(key, now + MESSAGE_DEDUPE_TTL_MS);
+  while (processedMessages.size > MESSAGE_DEDUPE_MAX) {
+    processedMessages.delete(processedMessages.keys().next().value);
+  }
+  return false;
+}
 
 function extractMessageText(message) {
   const content = normalizeMessageContent(message);
@@ -53,6 +80,7 @@ export async function handleMessage(sock, msg) {
   const jid = msg.key.remoteJid;
   if (!jid || jid === 'status@broadcast' || jid.endsWith('@broadcast') || jid.endsWith('@newsletter')) return;
   if (Date.now() / 1000 - toSec(msg.messageTimestamp) > 60) return; // ignore old/backfilled
+  if (isDuplicateMessage(msg, jid)) return;
 
   const content = normalizeMessageContent(msg.message);
   const text = extract(content).trim();
