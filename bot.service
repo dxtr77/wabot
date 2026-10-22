@@ -1,0 +1,18 @@
+[Unit]
+Description=WhatsApp server bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wabot
+WorkingDirectory=/opt/wabot
+ExecStart=/usr/bin/node src/index.js
+Restart=always
+RestartSec=5
+# IMPORTANT: lets the Minecraft tmux session survive bot restarts
+KillMode=process
+EnvironmentFile=/opt/wabot/.env
+
+[Install]
+WantedBy=multi-user.target
