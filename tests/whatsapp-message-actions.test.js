@@ -105,6 +105,37 @@ test('progress update catches edit failures', async () => {
   assert.ok(calls.length > 0);
 });
 
+test('react targets the original incoming message', async () => {
+  const { actions, calls, msg } = makeFixture();
+
+  assert.equal(await actions.react('⬇️'), true);
+  assert.equal(calls[0][1], '123@s.whatsapp.net');
+  assert.deepEqual(calls[0][2], {
+    react: { text: '⬇️', key: msg.key },
+  });
+});
+
+test('reaction failures are absorbed', async () => {
+  const actions = createMessageActions({
+    sock: {
+      sendMessage: async () => { throw new Error('reaction failed'); },
+      sendPresenceUpdate: async () => {},
+    },
+    msg: { key: { id: 'incoming-1' } },
+    jid: '123@s.whatsapp.net',
+    isGroup: false,
+    mark: '\u200B',
+  });
+
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    assert.equal(await actions.react('✅'), false);
+  } finally {
+    console.warn = warn;
+  }
+});
+
 test('typing sends composing presence and absorbs rejected promises', async () => {
   const { actions, calls } = makeFixture();
   await actions.typing();

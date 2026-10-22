@@ -8,6 +8,23 @@ export function createMessageActions({ sock, msg, jid, isGroup, mark }) {
     send: (content) =>
       sock.sendMessage(jid, content, sendOptions),
 
+    react: async (emoji) => {
+      if (!msg?.key?.id) return false;
+
+      try {
+        await sock.sendMessage(jid, {
+          react: { text: String(emoji || ''), key: msg.key },
+        });
+        return true;
+      } catch (e) {
+        console.warn(
+          'WhatsApp reaction failed:',
+          String(e?.message || e).slice(0, 160)
+        );
+        return false;
+      }
+    },
+
     createProgress: async (initialText) => {
       const sent = await sock.sendMessage(
         jid,

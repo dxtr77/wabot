@@ -201,11 +201,12 @@ function availableQualities(info) {
 async function showQualityMenu(ctx, url) {
   let token;
   try {
-    await ctx.reply('🔎 Checking available video qualities and file sizes…');
+    await ctx.react('🔎');
     const info = await inspectWithYtDlp(url);
     const qualities = availableQualities(info);
 
     if (!qualities.length) {
+      await ctx.react('❌');
       return ctx.reply('❌ No downloadable video resolutions were found.');
     }
 
@@ -232,6 +233,7 @@ async function showQualityMenu(ctx, url) {
     pendingSelections.get(token).choiceHeights =
       qualities.map((item) => item.height);
 
+    await ctx.react('🎬');
     await ctx.reply([
       '🎬 Choose video quality',
       `Video: ${String(info.title || 'Selected video').slice(0, 180)}`,
@@ -243,6 +245,7 @@ async function showQualityMenu(ctx, url) {
     ].join('\n'));
   } catch (error) {
     if (token) pendingSelections.delete(token);
+    await ctx.react('❌');
     await ctx.reply(`❌ ${error.message || 'Could not inspect this video.'}`);
   }
 }
@@ -411,12 +414,12 @@ export async function handle(ctx, args, mode) {
     return showQualityMenu(ctx, url);
   }
 
-  const progress = await ctx.createProgress(
-    running >= cfg.dl.concurrency ? '⏳ Queued…' : '⏬ Preparing download…'
+  await ctx.react(
+    running >= cfg.dl.concurrency ? '⏳' : '⬇️'
   );
 
   await acquire();
-  await progress.update('⏬ Downloading media…');
+  await ctx.react('⬇️');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wabot-'));
 
   try {
@@ -439,7 +442,7 @@ export async function handle(ctx, args, mode) {
         ];
 
     await runYtDlp([...common, ...fmt, '--', url]);
-    await progress.update('🔎 Download complete. Preparing the file…');
+    await ctx.react('🔎');
 
     const files = fs.readdirSync(dir)
       .map((f) => ({
@@ -474,7 +477,7 @@ export async function handle(ctx, args, mode) {
       '\u200B' + f.replace(/ \[[^\]]+\]\.\w+$/, '').replace(/_/g, ' ');
 
     if (mode !== 'audio' && VIDEO_EXTS.has(ext)) {
-      await progress.update('🎙️ Separating vocals from music. This can take several minutes…');
+      await ctx.react('🎙️');
 
       p = await vocalsOnly(p, dir);
       f = path.basename(p);
@@ -490,7 +493,7 @@ export async function handle(ctx, args, mode) {
       }
     }
 
-    await progress.update('📤 Sending media…');
+    await ctx.react('📤');
 
     if (mode === 'audio' || ext === '.mp3') {
       await ctx.send({
@@ -516,9 +519,10 @@ export async function handle(ctx, args, mode) {
         caption: `\u200B${title} (${mb.toFixed(0)} MB, sent as file)`
       });
     }
-    await progress.update('✅ Download complete.');
+    await ctx.react('✅');
   } catch (e) {
-    await progress.update('❌ ' + e.message);
+    await ctx.react('❌');
+    await ctx.reply(`❌ ${e.message || 'Download failed.'}`);
   } finally {
     release();
     fs.rm(dir, { recursive: true, force: true }, () => {});
