@@ -163,8 +163,10 @@ export const toolDeclarations = [
     description:
       'Download media only when the current user explicitly asks to download it. ' +
       'Use a URL from the current message or its quoted message. Do not download ' +
-      'merely because a URL was shared. Use mode video or audio. Video height ' +
-      'must be 480, 720, or 1080.',
+      'merely because a URL was shared. Use mode video or audio. Only provide ' +
+      'height when the user explicitly requests a specific resolution (480, 720, ' +
+      'or 1080). Otherwise omit height so the user can choose from the quality ' +
+      'menu showing available resolutions and estimated file sizes.',
     parameters: {
       type: 'OBJECT',
       properties: {
@@ -264,14 +266,20 @@ export async function executeAgentTool(name, args, ctx) {
       const mode = args.mode === 'audio' ? 'audio' : 'video';
       const height = [480, 720, 1080].includes(Number(args.height))
         ? Number(args.height)
-        : 720;
+        : null;
 
       if (!url) {
         return { ok: false, error: 'No media URL was provided.' };
       }
 
       // download.js performs its own URL validation and enforces limits.
-      await dl.handle(ctx, mode === 'audio' ? `audio ${url}` : `${height} ${url}`, mode);
+      const downloadArgs = mode === 'audio'
+        ? `audio ${url}`
+        : height
+          ? `${height} ${url}`
+          : url;
+
+      await dl.handle(ctx, downloadArgs, mode);
       return {
         ok: true,
         result: 'The existing downloader handled the request. Check the chat for its download or error message.'
