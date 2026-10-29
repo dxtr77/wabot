@@ -9,6 +9,7 @@ async function loadRouter(t) {
     replies: [],
     aiCalls: [],
     adminCalls: [],
+    azkarCalls: [],
   };
 
   mock.module('../src/config.js', {
@@ -67,6 +68,10 @@ async function loadRouter(t) {
         state.adminCalls.push({ cmd, args }),
     },
   });
+
+  mock.module('../src/commands/azkar.js', { namedExports: {
+    handle: async (ctx, args) => state.azkarCalls.push({ ctx, args }),
+  } });
 
   mock.module('../src/commands/service.js', {
     namedExports: {
@@ -174,6 +179,16 @@ test('router delegates admin commands to the protected admin handler', async (t)
     { cmd: 'admin', args: 'list' },
     { cmd: 'bot', args: 'off' },
   ]);
+});
+
+test('daily reminder command aliases delegate to the protected group handler', async (t) => {
+  const { dispatchCommand, state } = await loadRouter(t);
+  const ctx = makeContext({ isOwner: true });
+  for (const command of ['azkar', 'adhkar', 'doaa', 'اذكار', 'أذكار']) {
+    await dispatchCommand(ctx, command, 'on 09:00 Asia/Kolkata');
+  }
+  assert.equal(state.azkarCalls.length, 5);
+  assert.ok(state.azkarCalls.every((call) => call.ctx === ctx && call.args === 'on 09:00 Asia/Kolkata'));
 });
 
 test('AI command without text returns usage instead of calling the model', async (t) => {

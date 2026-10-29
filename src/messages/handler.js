@@ -13,6 +13,7 @@ import { dispatchCommand } from '../commands/router.js';
 import { parseCommand } from '../commands/parsing.js';
 import { buildQuotedAiPrompt } from './quoted-context.js';
 import { createMessageActions } from './actions.js';
+import { captureGroupMessage } from '../context/service.js';
 
 
 
@@ -86,9 +87,10 @@ export async function handleMessage(sock, msg) {
   const text = extract(content).trim();
   const listResponseId = extractListResponseId(content);
   const currentMediaType = content?.imageMessage ? 'image'
-    : content?.audioMessage ? 'audio' : '';
+    : content?.videoMessage?.gifPlayback ? 'gif'
+    : content?.audioMessage ? 'audio' : content?.stickerMessage ? 'sticker' : '';
   const currentMediaMessage = currentMediaType
-    ? content[`${currentMediaType}Message`] : null;
+    ? content[currentMediaType === 'gif' ? 'videoMessage' : `${currentMediaType}Message`] : null;
   if ((!text && !currentMediaType && !listResponseId) || text.startsWith(MARK)) return;
 
   const meJids = [sock.user?.id, sock.user?.lid].filter(Boolean).map(jidNormalizedUser);
@@ -117,14 +119,16 @@ export async function handleMessage(sock, msg) {
   // If the current message has no media, inspect the message being quoted.
   const quotedContent = normalizeMessageContent(quotedInfo?.quotedMessage);
   const quotedMediaType = quotedContent?.imageMessage ? 'image'
-    : quotedContent?.audioMessage ? 'audio' : '';
+    : quotedContent?.videoMessage?.gifPlayback ? 'gif'
+    : quotedContent?.audioMessage ? 'audio' : quotedContent?.stickerMessage ? 'sticker' : '';
   const quotedMediaMessage = quotedMediaType
-    ? quotedContent[`${quotedMediaType}Message`] : null;
+    ? quotedContent[quotedMediaType === 'gif' ? 'videoMessage' : `${quotedMediaType}Message`] : null;
 
   // Prefer an attachment on the current message; otherwise use quoted media.
   const mediaType = currentMediaType || quotedMediaType;
   const mediaMessage = currentMediaType
     ? currentMediaMessage : quotedMediaMessage;
+  const mediaSource = currentMediaType ? 'current' : quotedMediaType ? 'quoted' : '';
 
   const info = ctxInfo(content);
   const quotedText = extractQuotedMessageText(quotedInfo?.quotedMessage);
@@ -141,21 +145,21 @@ export async function handleMessage(sock, msg) {
   if (isGroup && !db.data.groups[jid] && !(isOwner && cmd === 'bot')) return;
   if (!isOwner && db.data.banned.includes(senderNum)) return;
 
-  // Per-user cooldown for non-owners
-  if (!isOwner) {
-    const last = cooldown.get(senderNum) || 0;
-    if (Date.now() - last < 3000) return;
-    cooldown.set(senderNum, Date.now());
-  }
-
   const ctx = {
     sock, msg, jid, isGroup, isSelf, isOwner, isMinecraftAdmin, text, meNum,
-    mediaType, mediaMessage,
+    mediaType, mediaMessage, mediaSource,
+    mediaAttachments: [
+      ...(currentMediaType ? [{ type: currentMediaType, message: currentMediaMessage, source: 'current',
+        author: sender, caption: text }] : []),
+      ...(quotedMediaType ? [{ type: quotedMediaType, message: quotedMediaMessage, source: 'quoted',
+        author: quotedSender, caption: quotedText }] : []),
+    ],
     sender, senderNum,
     name: msg.pushName || senderNum,
     mentioned: info.mentionedJid || [],
     quotedSender: quotedInfo?.participant || info.participant || '',
     quotedText,
+    quotedMessageId: quotedInfo?.stanzaId || '',
     quotedIsBot,
     num,
     isMeJid: isMe,
@@ -163,6 +167,16 @@ export async function handleMessage(sock, msg) {
   };
 
   try {
+    // Capture allowed conversation before response cooldowns; rapid discussion
+    // still belongs in context even when the bot should remain quiet.
+    captureGroupMessage(ctx, { isPrefixed, cmd });
+
+    if (!isOwner) {
+      const last = cooldown.get(senderNum) || 0;
+      if (Date.now() - last < 3000) return;
+      cooldown.set(senderNum, Date.now());
+    }
+
     if (listResponseId) {
       return dl.handleSelection(ctx, listResponseId);
     }
@@ -171,15 +185,21 @@ export async function handleMessage(sock, msg) {
 
     // ---- Automatic AI triggers ----
     if (!isPrefixed) {
+      // Sticker-only messages are reactions. Analyze one only when the sender
+      // adds a question/request, rather than answering every reaction.
+      if ((currentMediaType === 'sticker' || quotedMediaType === 'sticker') && !text.trim()) return;
       if (isGroup) {
         // Reply when addressed by name, or when replying to a bot message.
         // Supports Latin and Arabic spellings, case-insensitively.
-        const addressedToBot = /(?:^|[^\\p{L}\\p{N}])(?:sol|سول)(?=$|[^\\p{L}\\p{N}])/iu.test(text);
-        if (isReplyToBot || addressedToBot) {
+        const aliases = [...new Set([cfg.botName || 'Sol', 'sol', 'سول'])]
+          .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+        const addressed = new RegExp(`(?:^|[^\\p{L}\\p{N}])(?:${aliases})(?=$|[^\\p{L}\\p{N}])[,،:؛!؟?\\s]*`, 'iu');
+        const addressedToBot = addressed.test(text);
+        const mentionedBot = (info.mentionedJid || []).some(isMe);
+        if (isReplyToBot || addressedToBot || mentionedBot) {
           const prompt = addressedToBot
-            ? text.replace(/(?:^|[^\\p{L}\\p{N}])(?:sol|سول)(?=$|[^\\p{L}\\p{N}])[,،:؛!؟?\\s]*/iu, ' ').trim() || text
-            : buildQuotedAiPrompt(ctx, text);
-          return ai.chat(ctx, prompt);
+            ? text.replace(addressed, ' ').trim() || text : text;
+          return ai.chat(ctx, buildQuotedAiPrompt(ctx, prompt));
         }
         return;
       }

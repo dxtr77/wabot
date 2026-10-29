@@ -4,6 +4,11 @@ import { db } from '../store.js';
 const num = (jid = '') => jid.split('@')[0].split(':')[0];
 
 export function buildQuotedAiPrompt(ctx, text) {
+  if (!String(text || '').trim() && ctx.mediaType) {
+    text = ctx.mediaType === 'audio' ? 'Listen to this audio and respond to its content.'
+      : ctx.mediaType === 'sticker' ? 'Explain this sticker and read any visible text.'
+        : 'Analyze this image and answer from what is visible.';
+  }
   const raw = String(ctx.quotedText || '');
   const quoted = raw.replace(/^\u200B/, '').trim();
 

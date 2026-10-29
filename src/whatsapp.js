@@ -10,6 +10,7 @@ import { cfg } from './config.js';
 import { handleMessage } from './messages/handler.js';
 import { startSshMonitor } from './security/ssh-notifications.js';
 import { createReconnectController } from './whatsapp-reconnect.js';
+import { connectDailyAzkar, disconnectDailyAzkar } from './reminders/service.js';
 
 let pairingRequested = false;
 let activeSock;
@@ -92,9 +93,12 @@ async function startWhatsAppAttempt() {
     if (connection === 'open') {
       reconnectController.reset();
       console.log(`✅ Connected as ${sock.user?.id}`);
+      try { connectDailyAzkar(sock); }
+      catch { console.error('[Daily azkar] Scheduler unavailable; check the reminder settings file.'); }
     }
 
     if (connection === 'close') {
+      disconnectDailyAzkar(sock);
       const code = lastDisconnect?.error?.output?.statusCode;
 
       if (code === DisconnectReason.loggedOut) {

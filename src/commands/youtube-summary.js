@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { generate } from '../ai/llm.js';
+import { withYouTubeAccess } from '../downloads/youtube-access.js';
 
 const MAX_TRANSCRIPT_CHARS = 50000;
 const MAX_SUBTITLE_BYTES = 2 * 1024 * 1024;
@@ -129,29 +130,10 @@ export async function summarizeYouTube(args = {}) {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wabot-captions-'));
     const output = path.join(dir, 'caption.%(ext)s');
 
-    // Use the existing cookie file configured in .env.
-    const configuredCookies = process.env.YTDLP_COOKIES?.trim();
-    let cookieArgs = [];
-
-    if (configuredCookies) {
-      const cookiePath = path.resolve(configuredCookies);
-
-      try {
-        fs.accessSync(cookiePath, fs.constants.R_OK);
-      } catch {
-        throw new Error(
-          'The YTDLP_COOKIES file is missing or unreadable by the bot.'
-        );
-      }
-
-      cookieArgs = ['--cookies', cookiePath];
-    }
-
-    await runYtDlp([
-      ...cookieArgs,
+    await withYouTubeAccess(url, (accessArgs) => runYtDlp([
+      ...accessArgs,
       '--no-playlist',
       '--no-warnings',
-      '--ignore-errors',
       '--skip-download',
       '--write-subs',
       '--write-auto-subs',
@@ -161,8 +143,8 @@ export async function summarizeYouTube(args = {}) {
       '--retries', '1',
       '--fragment-retries', '1',
       '-o', output,
-      url
-    ]);
+      '--', url
+    ]), { cookies: process.env.YTDLP_COOKIES?.trim() });
 
     const files = fs.readdirSync(dir)
       .filter(name => /\.(?:vtt|srt|srv3|ttml|json3)$/i.test(name))

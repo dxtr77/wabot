@@ -1,5 +1,6 @@
 import { cfg } from '../config.js';
 import { db } from '../store.js';
+import { getContextStore } from '../context/service.js';
 
 function target(ctx, args) {
   if (ctx.mentioned[0]) return ctx.num(ctx.mentioned[0]);
@@ -75,7 +76,17 @@ export async function handle(ctx, cmd, args) {
       if (!ctx.isGroup) return ctx.reply('Use this inside a group.');
       const v = args.trim().toLowerCase();
       if (v === 'on') { db.data.groups[ctx.jid] = true; db.save(); return ctx.reply(`✅ ${cfg.botName} is now active in this group. Try ${cfg.prefix}help`); }
-      if (v === 'off') { delete db.data.groups[ctx.jid]; db.save(); return ctx.reply('😴 Bot disabled in this group.'); }
+      if (v === 'off') {
+        const store = getContextStore();
+        if (store.enabled(ctx.jid)) {
+          store.configure(ctx.jid, { enabled: false });
+          store.flush();
+          if (db.data.history) delete db.data.history[ctx.jid];
+        }
+        delete db.data.groups[ctx.jid];
+        db.save();
+        return ctx.reply('😴 Bot disabled in this group. Group context capture stopped and captured context erased.');
+      }
       return ctx.reply(`Bot is *${db.data.groups[ctx.jid] ? 'on' : 'off'}* here. Use ${cfg.prefix}bot on|off`);
     }
   }

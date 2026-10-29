@@ -9,9 +9,17 @@ export async function runToolLoop({
   generateStream,
   executeTool,
   maxToolRounds = 5,
+  maxToolCalls = 12,
   logError = console.error,
 }) {
   let rounds = 0;
+  let executions = 0;
+  const declared = new Set(toolDeclarations.map((tool) => tool.name));
+  const effects = new Set(['download_media', 'start_minecraft_server', 'stop_minecraft_server', 'search_and_send_images']);
+  const completed = new Map();
+  const canonical = (value) => Array.isArray(value) ? value.map(canonical)
+    : value && typeof value === 'object'
+      ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
 
   while (true) {
     const res = await generate('chat', {
@@ -24,7 +32,11 @@ export async function runToolLoop({
     }, requestOptions);
 
     const calls = res.functionCalls || [];
-    if (!calls.length) break;
+    if (!calls.length) {
+      if (typeof res.text === 'string' && res.text.trim()) return res;
+      if (res.promptFeedback?.blockReason) return res;
+      break;
+    }
 
     const modelContent = res.candidates?.[0]?.content;
     if (!modelContent) {
@@ -38,13 +50,21 @@ export async function runToolLoop({
 
     for (const call of calls) {
       let result;
+      const signature = effects.has(call.name) ? JSON.stringify([call.name, canonical(call.args || {})]) : '';
 
       if (atLimit) {
         result = {
           ok: false,
           error: 'Tool-call limit reached; this request was not executed.',
         };
+      } else if (!declared.has(call.name)) {
+        result = { ok: false, error: 'This tool is not declared or available for this request.' };
+      } else if (signature && completed.has(signature)) {
+        result = completed.get(signature);
+      } else if (executions >= maxToolCalls) {
+        result = { ok: false, error: 'Tool execution limit reached; this request was not executed.' };
       } else {
+        executions++;
         try {
           result = await executeTool(call.name, call.args || {}, ctx);
         } catch (e) {
@@ -54,6 +74,7 @@ export async function runToolLoop({
             error: 'Tool execution failed: ' + e.message,
           };
         }
+        if (signature) completed.set(signature, result);
       }
 
       responses.push({

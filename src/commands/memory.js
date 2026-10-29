@@ -14,8 +14,13 @@ const getUser = (num, name) => {
 
 export async function updateMemory(ctx, user, hist) {
   const speakerId = String(ctx.senderNum);
+  const speakerRevision = user.memoryRevision || 0;
   const mine = hist
     .filter((h) => h.role === 'user' && h.who && String(h.who) === speakerId)
+    .filter((h) => (h.memoryRevision || 0) === speakerRevision)
+    .filter((h) => [...(h.mentions || []), h.quotedWho].filter((id) =>
+      id && String(id) !== speakerId && String(id) !== String(ctx.meNum))
+      .every((id) => (h.memoryTargets?.[id] || 0) === (db.data.users[id]?.memoryRevision || 0)))
     .slice(-10);
 
   if (!mine.length) {
@@ -40,7 +45,7 @@ export async function updateMemory(ctx, user, hist) {
 
   const targets = [...allowedTargets].map((id) => {
     const target = getUser(id, db.data.users[id]?.name || id);
-    return { id, name: target.name, facts: target.facts || [] };
+    return { id, name: target.name, facts: target.facts || [], memoryRevision: target.memoryRevision || 0 };
   });
 
   const lockIds = [speakerId, ...targets.map((t) => t.id)];
@@ -83,6 +88,8 @@ export async function updateMemory(ctx, user, hist) {
 
     const raw = (res.text || '').replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(raw);
+    // Manual remember/forget commands invalidate older extraction requests.
+    if ((user.memoryRevision || 0) !== speakerRevision) return;
 
     // Accept the old response shape as a compatibility fallback.
     const speakerFacts = Array.isArray(parsed.speakerFacts)
@@ -102,7 +109,9 @@ export async function updateMemory(ctx, user, hist) {
         const id = String(update?.id || '');
         if (!allowed.has(id) || !Array.isArray(update.facts)) continue;
         const target = db.data.users[id];
-        if (target) target.facts = cleanFacts(update.facts);
+        if (target && (target.memoryRevision || 0) === allowed.get(id).memoryRevision) {
+          target.facts = cleanFacts(update.facts);
+        }
       }
     }
 
@@ -131,6 +140,7 @@ export async function memoryCommand(ctx, cmd, args) {
     case 'remember':
       if (!args) return ctx.reply(`Usage: ${cfg.prefix}remember <fact about you>`);
       user.facts.push(args.slice(0, 200));
+      user.memoryRevision = (user.memoryRevision || 0) + 1;
       db.save();
       return ctx.reply('🧠 Got it.');
     case 'memory':
@@ -141,14 +151,20 @@ export async function memoryCommand(ctx, cmd, args) {
       );
     case 'forget':
       user.facts = [];
+      user.memoryRevision = (user.memoryRevision || 0) + 1;
       user.turns = 0;
       user.memoryPending = false;
       if (!other) delete db.data.history[ctx.jid];
       db.save();
-      return ctx.reply(other ? `🧹 Memory about ${label} erased.` : '🧹 Memory and chat history erased.');
+      return ctx.reply(other ? `🧹 Memory about ${label} erased.`
+        : ctx.contextEnabled
+          ? `🧹 Personal memory and legacy AI history erased. Captured group conversation remains; an owner can use ${cfg.prefix}context clear.`
+          : '🧹 Memory and chat history erased.');
     case 'reset':
       delete db.data.history[ctx.jid];
       db.save();
-      return ctx.reply('🔄 Chat history cleared.');
+      return ctx.reply(ctx.contextEnabled
+        ? `🔄 Legacy AI history cleared. Captured group conversation remains; an owner can use ${cfg.prefix}context clear.`
+        : '🔄 Chat history cleared.');
   }
 }

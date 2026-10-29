@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { cfg } from '../config.js';
+import { withYouTubeAccess } from '../downloads/youtube-access.js';
 
 const PYTHON = path.join(os.homedir(), 'voice-separation/venv/bin/python');
 const VIDEO_EXTS = new Set([
@@ -100,13 +101,13 @@ function runYtDlp(args) {
 }
 
 
-function inspectWithYtDlp(url) {
+function inspectAttempt(url, accessArgs) {
   return new Promise((resolve, reject) => {
     const args = [
+      ...accessArgs,
       '--no-playlist', '--no-warnings', '--socket-timeout', '20',
       '--dump-single-json', '--skip-download',
     ];
-    if (cfg.dl.cookies) args.push('--cookies', cfg.dl.cookies);
     args.push('--', url);
 
     const p = spawn('yt-dlp', args, {
@@ -156,6 +157,12 @@ function inspectWithYtDlp(url) {
         finish(new Error('yt-dlp returned invalid video information'));
       }
     });
+  });
+}
+
+function inspectWithYtDlp(url) {
+  return withYouTubeAccess(url, (accessArgs) => inspectAttempt(url, accessArgs), {
+    cookies: cfg.dl.cookies, playerClients: cfg.dl.youtubeClients,
   });
 }
 
@@ -211,7 +218,8 @@ async function showQualityMenu(ctx, url) {
 
     if (!qualities.length) {
       await ctx.react('❌');
-      return ctx.reply('❌ No downloadable video resolutions were found.');
+      await ctx.reply('❌ No downloadable video resolutions were found.');
+      return { ok: false, status: 'failed', error: 'No downloadable video resolutions were found.' };
     }
 
     for (const [token, pending] of pendingSelections) {
@@ -247,10 +255,12 @@ async function showQualityMenu(ctx, url) {
       'Reply with the number of your chosen quality.',
       'This menu expires in 5 minutes. Sizes are estimates.',
     ].join('\n'));
+    return { ok: true, status: 'awaiting_selection', result: 'A quality menu was sent; no video has been downloaded yet.' };
   } catch (error) {
     if (token) pendingSelections.delete(token);
     await ctx.react('❌');
     await ctx.reply(`❌ ${error.message || 'Could not inspect this video.'}`);
+    return { ok: false, status: 'failed', error: error.message || 'Could not inspect this video.' };
   }
 }
 
@@ -407,11 +417,12 @@ export async function handle(ctx, args, mode) {
 
   const url = safeUrl(parts[0] || '');
   if (!url) {
-    return ctx.reply(
+    await ctx.reply(
       `Usage: ${cfg.prefix}dl <url>  · ` +
       `${cfg.prefix}audio <url>  · ` +
       `${cfg.prefix}dl 480 <url>`
     );
+    return { ok: false, status: 'invalid', error: 'A valid public HTTP(S) media URL is required.' };
   }
 
   if (mode !== 'audio' && !explicitHeight) {
@@ -425,10 +436,12 @@ export async function handle(ctx, args, mode) {
     );
 
     if (hasPendingMenu) {
-      return ctx.reply('ℹ️ You already have a quality menu for this video. Choose a resolution from that menu.');
+      await ctx.reply('ℹ️ You already have a quality menu for this video. Choose a resolution from that menu.');
+      return { ok: true, status: 'awaiting_selection', result: 'A quality menu already exists; await the user selection.' };
     }
     if (activeQualityMenus.has(menuKey)) {
-      return ctx.reply('⏳ The quality menu for this video is already being prepared.');
+      await ctx.reply('⏳ The quality menu for this video is already being prepared.');
+      return { ok: true, status: 'queued', result: 'A quality menu is being prepared.' };
     }
 
     activeQualityMenus.add(menuKey);
@@ -451,10 +464,12 @@ export async function handle(ctx, args, mode) {
   }
 
   if (activeDownloads.has(downloadKey)) {
-    return ctx.reply('⏳ This download is already running in this chat. Ignoring the duplicate request.');
+    await ctx.reply('⏳ This download is already running in this chat. Ignoring the duplicate request.');
+    return { ok: true, status: 'running', result: 'This download is already running; no duplicate was started.' };
   }
   if (recentDownloads.has(downloadKey)) {
-    return ctx.reply('ℹ️ This media was just downloaded in this chat. Ignoring the duplicate request.');
+    await ctx.reply('ℹ️ This media was just downloaded in this chat. Ignoring the duplicate request.');
+    return { ok: true, status: 'already_completed', result: 'This media was just sent; no duplicate was started.' };
   }
 
   // Lock before queueing so duplicate requests cannot occupy queue slots.
@@ -480,10 +495,6 @@ export async function handle(ctx, args, mode) {
       '-o', path.join(dir, '%(title).60B [%(id)s].%(ext)s')
     ];
 
-    if (cfg.dl.cookies) {
-      common.push('--cookies', cfg.dl.cookies);
-    }
-
     const fmt = mode === 'audio'
       ? ['-x', '--audio-format', 'mp3', '--audio-quality', '4']
       : [
@@ -491,7 +502,9 @@ export async function handle(ctx, args, mode) {
           '--merge-output-format', 'mp4'
         ];
 
-    await runYtDlp([...common, ...fmt, '--', url]);
+    await withYouTubeAccess(url, (accessArgs) => runYtDlp([...accessArgs, ...common, ...fmt, '--', url]), {
+      cookies: cfg.dl.cookies, playerClients: cfg.dl.youtubeClients,
+    });
     await ctx.react('🔎');
 
     const files = fs.readdirSync(dir)
@@ -571,9 +584,11 @@ export async function handle(ctx, args, mode) {
     }
     succeeded = true;
     await ctx.react('✅');
+    return { ok: true, status: 'completed', result: 'Media was downloaded and sent to the chat.' };
   } catch (e) {
     await ctx.react('❌');
     await ctx.reply(`❌ ${e.message || 'Download failed.'}`);
+    return { ok: false, status: 'failed', error: e.message || 'Download failed.' };
   } finally {
     if (acquired) release();
     if (dir) fs.rm(dir, { recursive: true, force: true }, () => {});

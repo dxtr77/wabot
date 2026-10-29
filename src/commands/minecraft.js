@@ -68,24 +68,26 @@ async function showPlayers(ctx) {
 }
 
 async function start(ctx) {
-  if (busy) return ctx.reply('⏳ Another operation is in progress.');
-  if (await ping()) return ctx.reply('✅ Server is already running.');
+  if (busy) { await ctx.reply('⏳ Another operation is in progress.'); return false; }
+  if (await ping()) { await ctx.reply('✅ Server is already running.'); return true; }
   busy = true;
   try {
     await ctx.reply('🚀 Starting Minecraft server…');
     await sh(cfg.mc.startCmd, { cwd: cfg.mc.dir });
     const ok = await waitFor(true, 180);
     await ctx.reply(ok ? '✅ Server is online!' : '⚠️ Launched but not responding yet. Check logs.');
+    return ok;
   } catch (e) {
     await ctx.reply('❌ Failed to start: ' + e.message);
+    return false;
   } finally {
     busy = false;
   }
 }
 
 async function stop(ctx, quiet = false) {
-  if (busy && !quiet) return ctx.reply('⏳ Another operation is in progress.');
-  if (!(await ping())) return quiet ? true : ctx.reply('🔴 Server is already offline.');
+  if (busy && !quiet) { await ctx.reply('⏳ Another operation is in progress.'); return false; }
+  if (!(await ping())) { if (!quiet) await ctx.reply('🔴 Server is already offline.'); return true; }
   if (!quiet) busy = true;
   try {
     if (!quiet) await ctx.reply('🛑 Stopping server…');
@@ -296,9 +298,10 @@ export async function aiStatusSummary(includeNames = false) {
 
 
 // AI-facing controls. Authorization is enforced in agent-tools.js.
-export async function aiStartServer() {
+export async function aiStartServer({ detailed = false } = {}) {
+  const report = (ok, status, result) => detailed ? { ok, status, result } : result;
   if (await ping()) {
-    return 'Minecraft is already running. No action was taken.';
+    return report(true, 'already_running', 'Minecraft is already running. No action was taken.');
   }
 
   try {
@@ -308,27 +311,28 @@ export async function aiStartServer() {
       { timeout: 3000 },
     );
     if (stdout.trim()) {
-      return 'Start refused: a Fabric Java process already exists, but Minecraft did not answer its status ping. Check the logs before trying again.';
+      return report(false, 'refused', 'Start refused: a Fabric Java process already exists, but Minecraft did not answer its status ping. Check the logs before trying again.');
     }
   } catch (err) {
     if (err.code !== 1) {
-      return 'Start refused because the process check failed: ' +
-        String(err.message || err).slice(0, 300);
+      return report(false, 'refused', 'Start refused because the process check failed: ' +
+        String(err.message || err).slice(0, 300));
     }
     // pgrep exit code 1 means no matching process was found.
   }
 
   const messages = [];
   const ctx = { reply: async (message) => { messages.push(String(message)); } };
-  await start(ctx);
-  return messages.join('\n') || 'Start operation finished without a status message.';
+  const ok = await start(ctx);
+  return report(ok === true, ok ? 'completed' : 'unconfirmed', messages.join('\n') || 'Start operation finished without a status message.');
 }
 
-export async function aiStopServer() {
+export async function aiStopServer({ detailed = false } = {}) {
   const messages = [];
   const ctx = { reply: async (message) => { messages.push(String(message)); } };
-  await stop(ctx);
-  return messages.join('\n') || 'Stop operation finished without a status message.';
+  const ok = await stop(ctx);
+  const result = messages.join('\n') || 'Stop operation finished without a status message.';
+  return detailed ? { ok: ok === true, status: ok ? 'completed' : 'unconfirmed', result } : result;
 }
 
 export async function handle(ctx, args) {

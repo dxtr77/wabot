@@ -11,6 +11,9 @@ backups/
 *.before-*
 
 coverage/
+.venv-youtube/
+__pycache__/
+*.pyc
 *.log
 .DS_Store
 

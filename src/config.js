@@ -11,6 +11,13 @@ export const cfg = {
   owners: new Set(list(process.env.OWNER_NUMBERS).map((n) => n.replace(/\D/g, '')).filter(Boolean)),
   pairingNumber: (process.env.PAIRING_NUMBER || '').replace(/\D/g, ''),
   diskMounts: list(process.env.DISK_MOUNTS),
+  context: {
+    retentionDays: Math.min(30, Math.max(1, int(process.env.CHAT_CONTEXT_RETENTION_DAYS, 7))),
+    maxMessages: Math.min(10000, Math.max(100, int(process.env.CHAT_CONTEXT_MAX_MESSAGES, 2000))),
+    recentMessages: Math.min(50, Math.max(10, int(process.env.CHAT_CONTEXT_RECENT_MESSAGES, 30))),
+    promptChars: Math.min(24000, Math.max(4000, int(process.env.CHAT_CONTEXT_PROMPT_CHARS, 18000))),
+    summaryBatch: 20,
+  },
   mc: {
     dir: process.env.MC_DIR || process.cwd(),
     host: process.env.MC_HOST || '127.0.0.1',
@@ -28,6 +35,7 @@ export const cfg = {
     maxMb: int(process.env.DL_MAX_MB, 1500),
     concurrency: int(process.env.DL_CONCURRENCY, 2),
     cookies: process.env.YTDLP_COOKIES || '',
+    youtubeClients: uniq(list(process.env.YTDLP_YOUTUBE_CLIENTS)),
   },
   tavily: {
     enabled: bool(process.env.TAVILY_ENABLED, true),

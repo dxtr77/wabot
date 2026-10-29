@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mock } from 'node:test';
 
-async function setup(t, { failFirstAuth = false, failFirstSshMonitor = false } = {}) {
+async function setup(t, { failFirstAuth = false, failFirstSshMonitor = false, failAzkarStart = false } = {}) {
   const state = {
     sockets: [],
     timers: new Map(),
@@ -11,6 +11,8 @@ async function setup(t, { failFirstAuth = false, failFirstSshMonitor = false } =
     sshMonitorCalls: 0,
     endCalls: [],
     errors: [],
+    azkarConnections: [],
+    azkarDisconnections: [],
   };
 
   const makeSocket = () => {
@@ -92,6 +94,14 @@ async function setup(t, { failFirstAuth = false, failFirstSshMonitor = false } =
     },
   });
 
+  mock.module('../src/reminders/service.js', { namedExports: {
+    connectDailyAzkar(sock) {
+      state.azkarConnections.push(sock);
+      if (failAzkarStart) throw new Error('Invalid reminder settings');
+    },
+    disconnectDailyAzkar(sock) { state.azkarDisconnections.push(sock); },
+  } });
+
   mock.method(console, 'log', () => {});
   mock.method(console, 'error', (message) => state.errors.push(String(message)));
 
@@ -108,6 +118,31 @@ async function settlePromises() {
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
 }
+
+test('reminder scheduling follows the active socket connection and ignores obsolete socket events', async (t) => {
+  const { startWhatsApp, state } = await setup(t);
+  await startWhatsApp();
+  const first = state.sockets[0];
+  await first.emit('connection.update', { connection: 'open' });
+  assert.deepEqual(state.azkarConnections, [first]);
+  await first.emit('connection.update', { connection: 'close' });
+  assert.deepEqual(state.azkarDisconnections, [first]);
+  const [id, timer] = [...state.timers.entries()][0];
+  state.timers.delete(id); timer.callback(); await settlePromises();
+  const second = state.sockets[1];
+  await second.emit('connection.update', { connection: 'open' });
+  await first.emit('connection.update', { connection: 'close' });
+  assert.deepEqual(state.azkarConnections, [first, second]);
+  assert.deepEqual(state.azkarDisconnections, [first]);
+});
+
+test('invalid reminder settings do not break an otherwise connected WhatsApp socket', async (t) => {
+  const { startWhatsApp, state } = await setup(t, { failAzkarStart: true });
+  await startWhatsApp();
+  await state.sockets[0].emit('connection.update', { connection: 'open' });
+  assert.equal(state.endCalls.length, 0);
+  assert.ok(state.errors.some((error) => /Scheduler unavailable/.test(error)));
+});
 
 test('a connection close schedules only one reconnect', async (t) => {
   const { startWhatsApp, state } = await setup(t);
