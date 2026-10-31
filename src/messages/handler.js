@@ -148,6 +148,10 @@ export async function handleMessage(sock, msg) {
   const ctx = {
     sock, msg, jid, isGroup, isSelf, isOwner, isMinecraftAdmin, text, meNum,
     mediaType, mediaMessage, mediaSource,
+    videoAttachments: [
+      ...(content?.videoMessage ? [{ type: 'video', message: content.videoMessage, source: 'current' }] : []),
+      ...(quotedContent?.videoMessage ? [{ type: 'video', message: quotedContent.videoMessage, source: 'quoted' }] : []),
+    ],
     mediaAttachments: [
       ...(currentMediaType ? [{ type: currentMediaType, message: currentMediaMessage, source: 'current',
         author: sender, caption: text }] : []),

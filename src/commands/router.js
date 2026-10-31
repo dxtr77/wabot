@@ -9,11 +9,14 @@ import * as service from './service.js';
 import * as llm from '../ai/llm.js';
 import * as context from './context.js';
 import * as azkar from './azkar.js';
+import * as nomusic from './nomusic.js';
 
 export async function dispatchCommand(ctx, cmd, args) {
   const ownerOnly = () => ctx.reply('⛔ Owner only.');
 
   switch (cmd) {
+    case 'nomusic': case 'vocals':
+      return nomusic.handle(ctx);
     case 'azkar': case 'adhkar': case 'doaa': case 'اذكار': case 'أذكار':
       return azkar.handle(ctx, args);
     case 'context':
@@ -79,6 +82,7 @@ function helpText(ctx) {
     '',
     `${p}dl <url> — download video (add a number for max height: ${p}dl 480 <url>)`,
     `${p}audio <url> — download audio (mp3)`,
+    `${p}nomusic | vocals — attach or reply to a video to keep vocals and remove instrumental music`,
     `${p}ai <text> — chat with me (in groups you can also @mention me)`,
     `${p}listen | transcribe — attach or reply to audio; images and stickers work with ${p}ai`,
     `${p}remember <fact> — add to what I know about you`,
