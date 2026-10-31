@@ -161,3 +161,17 @@ test('multimodal input does not bypass private-chat or disabled-group gates', as
     { jid: groupJid, fromMe: false }));
   assert.equal(calls.length, 0);
 });
+
+test('nomusic gets current and quoted regular videos without changing AI media support', async (t) => {
+  const { receive, dispatched } = await setup(t);
+  const current = { caption: '!nomusic', mimetype: 'video/mp4', seconds: 4 };
+  await receive(incoming({ videoMessage: current }));
+  assert.equal(dispatched.at(-1).command, 'nomusic');
+  assert.equal(dispatched.at(-1).ctx.videoAttachments[0].message, current);
+  assert.equal(dispatched.at(-1).ctx.videoAttachments[0].source, 'current');
+  const quoted = { mimetype: 'video/mp4', seconds: 6 };
+  await receive(incoming({ extendedTextMessage: { text: '!vocals', contextInfo: quote({ videoMessage: quoted }) } }));
+  assert.equal(dispatched.at(-1).command, 'vocals');
+  assert.equal(dispatched.at(-1).ctx.videoAttachments[0].message, quoted);
+  assert.equal(dispatched.at(-1).ctx.videoAttachments[0].source, 'quoted');
+});

@@ -1,145 +1,60 @@
-const API = 'https://commons.wikimedia.org/w/api.php';
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
-const ALLOWED_HOSTS = new Set(['upload.wikimedia.org']);
-const ALLOWED_MIMES = new Set([
-  'image/jpeg',
-  'image/png',
-  'image/webp',
-  'image/gif',
-]);
+import { searchTavilyImages, searchCommonsImages } from '../images/providers.js';
+import { downloadImage } from '../images/download.js';
+import { fingerprintImage, ImageHistory } from '../images/history.js';
 
-function safeImageUrl(value) {
-  try {
-    const url = new URL(value);
-    return url.protocol === 'https:' &&
-      ALLOWED_HOSTS.has(url.hostname) ? url : null;
-  } catch {
-    return null;
-  }
-}
-
-async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
-  return fetch(url, {
-    ...options,
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-}
+const history = new ImageHistory();
 
 export async function searchAndSendImages(ctx, args = {}) {
+  // Serialise image requests within this chat so concurrent calls cannot send
+  // the same result before either call records it. Other chats stay independent.
+  const chat = ctx.jid || ctx;
+  return history.run(chat, () => sendImages(ctx, args, chat));
+}
+
+async function sendImages(ctx, args, chat) {
   const query = String(args.query || '').trim().slice(0, 180);
-  const count = [1, 2, 3].includes(Number(args.count))
-    ? Number(args.count)
-    : 1;
+  const requested = Number(args.count);
+  const count = Number.isInteger(requested) && requested > 0 ? Math.min(5, requested) : 1;
+  if (!query) return { ok: false, error: 'Please provide an image search query.' };
 
-  if (!query) {
-    return { ok: false, error: 'Please provide an image search query.' };
-  }
-
-  try {
-    const params = new URLSearchParams({
-      action: 'query',
-      generator: 'search',
-      gsrsearch: query,
-      gsrnamespace: '6',
-      gsrlimit: String(Math.min(12, count * 4)),
-      prop: 'imageinfo',
-      iiprop: 'url|mime|size',
-      iiurlwidth: '1200',
-      format: 'json',
-      formatversion: '2',
-    });
-
-    const apiResponse = await fetchWithTimeout(
-      `${API}?${params}`,
-      { headers: { 'User-Agent': 'WABot/1.0 (Wikimedia Commons image search)' } },
-      12000,
-    );
-
-    if (!apiResponse.ok) {
-      throw new Error(`Wikimedia search returned HTTP ${apiResponse.status}`);
-    }
-
-    const data = await apiResponse.json();
-    const pages = Array.isArray(data.query?.pages) ? data.query.pages : [];
-
-    if (!pages.length) {
-      return { ok: false, error: `No Wikimedia Commons images found for "${query}".` };
-    }
-
-    const sent = [];
-    const errors = [];
-
-    for (const page of pages) {
-      if (sent.length >= count) break;
-
-      const info = page.imageinfo?.[0];
-      if (!info) continue;
-
-      const mime = String(info.mime || '').toLowerCase();
-      if (!ALLOWED_MIMES.has(mime)) continue;
-
-      // Prefer a resized thumbnail to keep WhatsApp uploads manageable.
-      const imageUrl = safeImageUrl(info.thumburl || info.url);
-      if (!imageUrl) continue;
-
-      if (Number(info.thumbwidth ? info.thumbsize : info.size) > MAX_IMAGE_BYTES) {
-        continue;
-      }
-
+  const sent = [], seen = new Set();
+  let skipped = false, searchFailed = false, found = false, duplicates = false;
+  const deadline = Date.now() + 35000;
+  // Preserve the query and provider relevance order. Fill gaps from Commons.
+  for (const search of [searchTavilyImages, searchCommonsImages]) {
+    if (sent.length >= count || Date.now() >= deadline) break;
+    let candidates;
+    try { candidates = await search(query, count); }
+    catch { searchFailed = true; continue; }
+    found ||= candidates.length > 0;
+    for (const candidate of candidates) {
+      if (sent.length >= count || Date.now() >= deadline) break;
+      if (seen.has(candidate.url)) continue;
+      seen.add(candidate.url);
+      let buffer, fingerprint;
       try {
-        const response = await fetchWithTimeout(imageUrl, {}, 20000);
-
-        // Reject redirects to unexpected hosts.
-        if (!response.ok || !safeImageUrl(response.url || imageUrl.href)) {
-          errors.push('An image URL could not be safely downloaded.');
-          continue;
-        }
-
-        const responseMime = String(
-          response.headers.get('content-type') || mime
-        ).split(';')[0].trim().toLowerCase();
-
-        if (!ALLOWED_MIMES.has(responseMime)) continue;
-
-        const length = Number(response.headers.get('content-length') || 0);
-        if (length > MAX_IMAGE_BYTES) continue;
-
-        const buffer = Buffer.from(await response.arrayBuffer());
-        if (!buffer.length || buffer.length > MAX_IMAGE_BYTES) continue;
-
-        const title = String(page.title || 'Wikimedia Commons image')
-          .replace(/^File:/, '')
-          .slice(0, 180);
-        const sourceUrl = `https://commons.wikimedia.org/wiki/${
-          encodeURIComponent(page.title || '').replace(/%20/g, '_')
-        }`;
-        const caption = `${title}\nSource: ${sourceUrl}`;
-
-        await ctx.send({ image: buffer, caption });
-        sent.push({ title, sourceUrl });
-      } catch (error) {
-        errors.push(String(error?.message || error).slice(0, 160));
+        buffer = await downloadImage(candidate.url, { timeoutMs: Math.max(1, Math.min(8000, deadline - Date.now())) });
+        fingerprint = await fingerprintImage(buffer);
+      } catch { skipped = true; continue; }
+      if (history.has(chat, fingerprint)) { skipped = true; duplicates = true; continue; }
+      try { await ctx.send({ image: buffer }); }
+      catch {
+        history.remember(chat, fingerprint);
+        // An upload can succeed despite a lost acknowledgement; do not send
+        // replacement images after an ambiguous WhatsApp failure.
+        return { ok: false, sent: sent.length, images: sent,
+          error: 'Image upload could not be confirmed. Please check the chat before retrying.' };
       }
+      history.remember(chat, fingerprint);
+      sent.push({ title: candidate.title, provider: candidate.provider });
     }
-
-    if (!sent.length) {
-      return {
-        ok: false,
-        error: 'Search found results, but no supported image could be safely sent. Try a different search phrase.',
-      };
-    }
-
-    return {
-      ok: true,
-      sent: sent.length,
-      images: sent,
-      note: errors.length ? 'Some results were skipped.' : 'Images sent successfully.',
-    };
-  } catch (error) {
-    console.error('Wikimedia image search failed:', String(error?.message || error).slice(0, 200));
-    return {
-      ok: false,
-      error: 'Image search failed or timed out. Please try again shortly.',
-    };
   }
+  if (!sent.length) return { ok: false, error: searchFailed && !found
+    ? 'Image search failed or timed out. Please try again shortly.'
+    : duplicates ? 'No new different images could be found. Try a more specific search phrase.'
+    : found ? 'Search found results, but no supported image could be safely sent. Try a different search phrase.'
+      : `No matching images found for "${query}". Try a more specific search phrase.` };
+  return { ok: true, sent: sent.length, images: sent,
+    note: sent.length < count ? 'Only some of the requested images could be sent.'
+      : skipped ? 'Some results were skipped.' : 'Images sent successfully.' };
 }

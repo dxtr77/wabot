@@ -113,3 +113,15 @@ persistent key-state path.
 
 Further splits should follow actual complexity. Server operations can eventually
 move out of command modules; retrieval can leave `context/store.js` if it grows.
+
+Image search: `src/commands/image-search.js` handles delivery and fallback;
+`src/images/providers.js` handles Tavily/Commons queries and the bounded Tavily
+cache; `src/images/history.js` compares image fingerprints and serializes recent
+sends per chat; `src/images/download.js` validates public destinations, pins DNS answers,
+bounds downloads and decodes image pixels. See [image search](docs/IMAGE-SEARCH.md).
+
+Attached-video music removal: `commands/nomusic.js` validates the request and
+cleans its workspace after sending. `media/video-input.js` streams WhatsApp video
+to disk and validates it with ffprobe. `media/vocals.js` contains the Demucs
+pipeline shared with URL downloads; processing uses the downloader's existing
+queue through `withMediaSlot`.
