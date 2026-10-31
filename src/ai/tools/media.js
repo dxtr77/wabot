@@ -4,11 +4,9 @@ export function createMediaTools({ searchAndSendImages, download }) {
       declaration: {
         name: 'search_and_send_images',
         description:
-          'Search web images using Tavily, with Wikimedia Commons as fallback, and send matching images to the current WhatsApp chat. ' +
+          'Search Wikimedia Commons and send matching images to the current WhatsApp chat. ' +
           'Use only when the user explicitly asks to find, search for, show, or send images. ' +
-          'Default to one image. For multiple images use count in a single call; repeated requests skip recently sent copies in this chat. ' +
-          'Images are sent without captions or source links; do not append sources in your reply unless asked. ' +
-          'Do not use this tool merely to discuss an image or analyze an attached image.',
+          'Default to one image. Do not use this tool merely to discuss an image or analyze an attached image.',
         parameters: {
           type: 'OBJECT',
           properties: {
@@ -18,7 +16,7 @@ export function createMediaTools({ searchAndSendImages, download }) {
             },
             count: {
               type: 'INTEGER',
-              description: 'Number of images to send (1 to 5). Use 1 unless the user requests more.',
+              description: 'Number of images to send (1 to 3). Use 1 unless the user requests more.',
             },
           },
           required: ['query'],

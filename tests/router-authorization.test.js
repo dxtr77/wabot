@@ -10,7 +10,6 @@ async function loadRouter(t) {
     aiCalls: [],
     adminCalls: [],
     azkarCalls: [],
-    nomusicCalls: [],
   };
 
   mock.module('../src/config.js', {
@@ -69,10 +68,6 @@ async function loadRouter(t) {
         state.adminCalls.push({ cmd, args }),
     },
   });
-
-  mock.module('../src/commands/nomusic.js', { namedExports: {
-    handle: async (ctx) => state.nomusicCalls.push(ctx),
-  } });
 
   mock.module('../src/commands/azkar.js', { namedExports: {
     handle: async (ctx, args) => state.azkarCalls.push({ ctx, args }),
@@ -204,12 +199,4 @@ test('AI command without text returns usage instead of calling the model', async
 
   assert.equal(state.aiCalls.length, 0);
   assert.match(ctx.replies[0], /Usage: !ai/);
-});
-
-
-test('nomusic and vocals aliases delegate to attached video processing', async (t) => {
-  const { dispatchCommand, state } = await loadRouter(t);
-  const ctx = { reply: async () => {}, isOwner: false, videoAttachments: [] };
-  for (const cmd of ['nomusic', 'vocals']) await dispatchCommand(ctx, cmd, '');
-  assert.deepEqual(state.nomusicCalls, [ctx, ctx]);
 });
